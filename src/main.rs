@@ -40,6 +40,7 @@ fn main() -> Result<()> {
 
     let (ctrl_tx, ctrl_rx) = std::sync::mpsc::channel();
     let initial_model = cfg.whisper_model.clone();
+    let initial_autostart = cfg.autostart;
     let worker_cfg = cfg.clone();
     let worker_shared = shared.clone();
     std::thread::spawn(move || {
@@ -48,5 +49,5 @@ fn main() -> Result<()> {
         }
     });
 
-    tray::run_until_quit(initial_model, ctrl_tx)
+    tray::run_until_quit(initial_model, initial_autostart, ctrl_tx)
 }

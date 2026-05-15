@@ -22,6 +22,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 /// Control message from the tray (main thread) to the worker thread.
 pub enum ControlEvent {
     SwitchModel(String),
+    SetAutostart(bool),
 }
 
 /// Models offered in the tray submenu. (id, label)
@@ -43,11 +44,16 @@ struct ModelEntry {
 }
 
 #[cfg(target_os = "windows")]
-pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> Result<()> {
-    let (tray, quit_id, models) = install(&initial_model)?;
+pub fn run_until_quit(
+    initial_model: String,
+    initial_autostart: bool,
+    ctrl_tx: Sender<ControlEvent>,
+) -> Result<()> {
+    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
     let _tray_guard = tray;
 
     let rx = MenuEvent::receiver();
+    let autostart_id = autostart_item.id().clone();
 
     unsafe {
         let mut msg: MSG = mem::zeroed();
@@ -62,6 +68,10 @@ pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> R
                     tracing::info!("quit requested from tray");
                     return Ok(());
                 }
+                if event.id == autostart_id {
+                    handle_autostart_click(&autostart_item, &ctrl_tx);
+                    continue;
+                }
                 handle_model_click(&event.id, &models, &ctrl_tx);
             }
 
@@ -71,7 +81,11 @@ pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> R
 }
 
 #[cfg(target_os = "macos")]
-pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> Result<()> {
+pub fn run_until_quit(
+    initial_model: String,
+    initial_autostart: bool,
+    ctrl_tx: Sender<ControlEvent>,
+) -> Result<()> {
     use tao::event::Event;
     use tao::event_loop::{ControlFlow, EventLoopBuilder};
     use tao::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
@@ -80,9 +94,10 @@ pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> R
     event_loop_builder.with_activation_policy(ActivationPolicy::Accessory);
     let event_loop = event_loop_builder.build();
 
-    let (tray, quit_id, models) = install(&initial_model)?;
+    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
     let _tray_guard = tray;
 
+    let autostart_id = autostart_item.id().clone();
     let menu_rx = MenuEvent::receiver();
 
     event_loop.run(move |event, _, control_flow| {
@@ -92,6 +107,8 @@ pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> R
                 if menu_event.id == quit_id {
                     tracing::info!("quit requested from tray");
                     *control_flow = ControlFlow::Exit;
+                } else if menu_event.id == autostart_id {
+                    handle_autostart_click(&autostart_item, &ctrl_tx);
                 } else {
                     handle_model_click(&menu_event.id, &models, &ctrl_tx);
                 }
@@ -101,18 +118,40 @@ pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> R
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-pub fn run_until_quit(initial_model: String, ctrl_tx: Sender<ControlEvent>) -> Result<()> {
-    let (tray, quit_id, models) = install(&initial_model)?;
+pub fn run_until_quit(
+    initial_model: String,
+    initial_autostart: bool,
+    ctrl_tx: Sender<ControlEvent>,
+) -> Result<()> {
+    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
     let _tray_guard = tray;
 
+    let autostart_id = autostart_item.id().clone();
     let rx = MenuEvent::receiver();
     while let Ok(event) = rx.recv() {
         if event.id == quit_id {
             return Ok(());
         }
+        if event.id == autostart_id {
+            handle_autostart_click(&autostart_item, &ctrl_tx);
+            continue;
+        }
         handle_model_click(&event.id, &models, &ctrl_tx);
     }
     Ok(())
+}
+
+fn handle_autostart_click(item: &CheckMenuItem, ctrl_tx: &Sender<ControlEvent>) {
+    let new_state = item.is_checked();
+    tracing::info!("tray: autostart -> {}", new_state);
+    if ctrl_tx
+        .send(ControlEvent::SetAutostart(new_state))
+        .is_err()
+    {
+        tracing::error!("worker disconnected — can't update autostart");
+        // Revert the tick so the menu state still reflects reality.
+        item.set_checked(!new_state);
+    }
 }
 
 fn handle_model_click(id: &MenuId, models: &[ModelEntry], ctrl_tx: &Sender<ControlEvent>) {
@@ -132,7 +171,10 @@ fn handle_model_click(id: &MenuId, models: &[ModelEntry], ctrl_tx: &Sender<Contr
     }
 }
 
-fn install(initial_model: &str) -> Result<(TrayIcon, MenuId, Vec<ModelEntry>)> {
+fn install(
+    initial_model: &str,
+    initial_autostart: bool,
+) -> Result<(TrayIcon, MenuId, Vec<ModelEntry>, CheckMenuItem)> {
     let menu = Menu::new();
 
     let version_label = MenuItem::new(
@@ -142,6 +184,12 @@ fn install(initial_model: &str) -> Result<(TrayIcon, MenuId, Vec<ModelEntry>)> {
     );
     menu.append(&version_label)
         .context("appending version label")?;
+    menu.append(&PredefinedMenuItem::separator())
+        .context("appending separator")?;
+
+    let autostart_item = CheckMenuItem::new("Start at login", true, initial_autostart, None);
+    menu.append(&autostart_item)
+        .context("appending autostart toggle")?;
     menu.append(&PredefinedMenuItem::separator())
         .context("appending separator")?;
 
@@ -194,7 +242,7 @@ fn install(initial_model: &str) -> Result<(TrayIcon, MenuId, Vec<ModelEntry>)> {
         .context("building tray icon")?;
 
     tracing::info!("tray icon installed");
-    Ok((tray, quit_id, models))
+    Ok((tray, quit_id, models, autostart_item))
 }
 
 // Renders the Wispr FreeFlow logo mark — five rounded "waveform" bars from

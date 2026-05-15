@@ -12,19 +12,18 @@ fn handle() -> Result<AutoLaunch> {
     Ok(AutoLaunch::new(APP_NAME, exe_str, &[] as &[&str]))
 }
 
+// Always rewrite the registry value on enable: `auto-launch::is_enabled()` only
+// checks an entry exists by name, not that it points to the current exe. If the
+// user moves the binary (portable use, upgrade from dev to installer, etc.) the
+// old path would otherwise stay registered and autostart would silently break.
 pub fn sync(enabled: bool) -> Result<()> {
     let auto = handle()?;
-    let currently = auto.is_enabled().unwrap_or(false);
-    match (enabled, currently) {
-        (true, false) => {
-            auto.enable().context("enabling autostart")?;
-            tracing::info!("autostart enabled");
-        }
-        (false, true) => {
-            auto.disable().context("disabling autostart")?;
-            tracing::info!("autostart disabled");
-        }
-        _ => {}
+    if enabled {
+        auto.enable().context("enabling autostart")?;
+        tracing::info!("autostart enabled for current exe");
+    } else if auto.is_enabled().unwrap_or(false) {
+        auto.disable().context("disabling autostart")?;
+        tracing::info!("autostart disabled");
     }
     Ok(())
 }

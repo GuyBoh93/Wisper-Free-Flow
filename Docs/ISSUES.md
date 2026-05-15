@@ -51,3 +51,10 @@ Ideas:
 - Add an optional caption string to `OverlayState` / `OverlaySharedState` and render it under the dots — e.g. "Loading base.en…", "Loading medium.en…".
 - Or add a distinct `OverlayState::LoadingModel { name: String }` variant so the renderer can pick the text itself and we keep transcription's `Processing` clean.
 - While we're there, consider a similar caption for the transcription phase ("Transcribing…") so the two states are visually distinguishable.
+
+## Autostart didn't survive moving / reinstalling the exe — FIXED 2026-05-15
+
+Symptom: app failed to launch at login after install. Root cause was two-fold:
+
+1. **Stale registry path.** `auto-launch::is_enabled()` only checks whether an entry exists *by name*, not whether the path matches the current exe. So if the binary moved (dev build → installed location → portable copy), `sync(true)` skipped the rewrite and HKCU\Run kept pointing at the old (sometimes deleted) path. Fixed in `src/autostart.rs:18-22` — `enable()` is now called unconditionally when `enabled=true`, so the registry path is always refreshed to `current_exe()` on launch. This is what makes "drop the exe anywhere, run it once" portable autostart work.
+2. **No way to recover from `autostart: false` in config.** The tray menu had no toggle, so once the config field was `false` (whether through stale state or manual edit) the user was stuck. Added a "Start at login" check item to the tray menu (`src/tray.rs`) wired through a new `ControlEvent::SetAutostart` to the worker, which calls `autostart::sync` and persists `cfg.autostart`.

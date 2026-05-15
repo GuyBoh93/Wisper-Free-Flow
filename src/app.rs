@@ -2,6 +2,7 @@
 // typer. Posts state transitions and live audio level into the shared overlay
 // state via Mutex so the Win32 overlay can render in real time.
 
+use crate::autostart;
 use crate::config::{Config, models_dir};
 use crate::hotkey::{HotkeyEvent, spawn_listener};
 use crate::overlay::{OverlayState, SharedOverlay};
@@ -36,6 +37,18 @@ pub fn worker_loop(
         // model swap anyway.
         while let Ok(ev) = ctrl_rx.try_recv() {
             match ev {
+                ControlEvent::SetAutostart(enabled) => {
+                    if cfg.autostart == enabled {
+                        continue;
+                    }
+                    cfg.autostart = enabled;
+                    if let Err(e) = autostart::sync(enabled) {
+                        tracing::error!("autostart sync failed: {e:#}");
+                    }
+                    if let Err(e) = cfg.save() {
+                        tracing::error!("saving config: {e:#}");
+                    }
+                }
                 ControlEvent::SwitchModel(name) => {
                     if name == cfg.whisper_model {
                         continue;
