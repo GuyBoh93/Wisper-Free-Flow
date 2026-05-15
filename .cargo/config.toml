@@ -1,0 +1,5 @@
+# Project-local cargo config.
+# LIBCLANG_PATH is set by build.bat (Windows) when LLVM is present at
+# C:\Program Files\LLVM. Required so whisper-rs-sys's bindgen can run —
+# the crate's bundled src/bindings.rs is Linux-only and will fail to
+# compile on Windows MSVC if WHISPER_DONT_GENERATE_BINDINGS is set.

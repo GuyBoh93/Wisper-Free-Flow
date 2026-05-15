@@ -1,0 +1,154 @@
+[package]
+name = "whisper-freeflow"
+version = "0.1.7"
+edition = "2024"
+description = "Open-source push-to-talk dictation. Hold a key, speak, release — text appears at your cursor."
+license = "MIT"
+repository = "https://github.com/GuyBoh93/Wisper-Free-Flow"
+readme = "README.md"
+keywords = ["dictation", "whisper", "speech-to-text", "push-to-talk", "transcription"]
+categories = ["multimedia::audio", "command-line-utilities"]
+authors = ["Whisper FreeFlow contributors"]
+
+[[bin]]
+name = "whisper-freeflow"
+path = "src/main.rs"
+
+# Helper to regenerate assets/icon.png from the logo geometry.
+#   cargo run --example gen_icon
+[[example]]
+name = "gen_icon"
+path = "tools/gen_icon.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+parking_lot = "0.12"
+
+# Audio capture
+cpal = "0.15"
+
+# Global keyboard listening (no event-loop required). `unstable_grab` enables
+# rdev::grab so we can suppress the hotkey's main key from reaching focused apps.
+rdev = { version = "0.5", features = ["unstable_grab"] }
+
+# Whisper inference (builds whisper.cpp from source — needs MSVC on Windows)
+whisper-rs = "0.16"
+
+# Text injection at cursor
+enigo = "0.3"
+
+# Model download from Hugging Face
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "stream"] }
+
+# Overlay rendering — pure Win32 layered window on Windows; tiny-skia rasterizes
+# the frames cross-platform.
+tiny-skia = "0.11"
+
+# System tray icon + menu
+tray-icon = "0.20"
+
+# Autostart on user login
+auto-launch = "0.5"
+
+# Windows-only: layered overlay window via Win32 and tray message pump.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_HiDpi",
+    "Win32_System_LibraryLoader",
+] }
+
+# macOS-only: tray-icon and overlay need a Cocoa-driven event loop on the
+# main thread. tao gives us that without pulling in a full windowing toolkit.
+[target.'cfg(target_os = "macos")'.dependencies]
+tao = "0.30"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+# Installer / package metadata for cargo-packager.
+# Run `build.bat installer` to produce installers in dist/.
+[package.metadata.packager]
+product-name = "Whisper FreeFlow"
+identifier = "io.whisperfreeflow.app"
+description = "Open-source push-to-talk dictation — hold a hotkey, speak, release."
+long-description = "Free, open-source competitor to Wispr Flow. Runs fully offline via whisper.cpp."
+category = "Utility"
+homepage = "https://github.com/GuyBoh93/Wisper-Free-Flow"
+authors = ["Whisper FreeFlow contributors"]
+license-file = "LICENSE"
+# cargo-packager auto-converts this 1024×1024 PNG to .ico for the Windows
+# installer and to .icns for the macOS .app bundle. Regenerate with
+# `cargo run --example gen_icon` after editing the logo.
+icons = ["assets/icon.png"]
+# Formats are picked by build scripts (build.bat on Windows -> nsis,
+# build.sh on macOS -> dmg). Leaving this unset lets cargo-packager
+# default to the host platform's native format.
+before-each-package-command = "cargo build --release"
+out-dir = "dist"
+
+[package.metadata.packager.windows]
+allow-downgrades = true
+
+[package.metadata.packager.macos]
+# Minimum macOS version supported. 11 (Big Sur) is the oldest still in
+# common use; whisper.cpp's metal backend needs >= 11.0 anyway.
+minimum-system-version = "11.0"
+# Custom Info.plist provides:
+#   - NSMicrophoneUsageDescription   (without it, mic access is silently denied)
+#   - LSUIElement = true             (menu-bar-only app, no Dock icon)
+#   - LSMinimumSystemVersion / HighRes capability
+info-plist-path = "macos/Info.plist"
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+appdata-paths = ["$LOCALAPPDATA/WhisperFreeFlow"]
+# Silently uninstalls any previous version before installing the new one,
+# so reinstalling over an existing copy feels like a seamless update.
+preinstall-section = '''
+Section "Update existing install" PreUpdate
+  ; Kill any running instance so we can replace/delete the binary.
+  DetailPrint "Stopping any running Whisper FreeFlow instance..."
+  nsExec::Exec 'taskkill /F /IM whisper-freeflow.exe /T'
+  Sleep 500
+
+  ReadRegStr $R0 SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "UninstallString"
+  ${If} $R0 == ""
+    ReadRegStr $R0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "UninstallString"
+  ${EndIf}
+  ${If} $R0 == ""
+    ReadRegStr $R0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}" "UninstallString"
+  ${EndIf}
+
+  ${If} $R0 != ""
+    StrCpy $R1 $R0 1
+    ${If} $R1 == '"'
+      StrCpy $R0 $R0 "" 1
+      StrCpy $R1 $R0 "" -1
+      ${If} $R1 == '"'
+        StrCpy $R0 $R0 -1
+      ${EndIf}
+    ${EndIf}
+
+    ${GetParent} "$R0" $R2
+
+    DetailPrint "Updating from previous installation..."
+    ExecWait '"$R0" /S _?=$R2'
+    Delete "$R0"
+  ${EndIf}
+SectionEnd
+'''

@@ -1,0 +1,40 @@
+# --- Rust / Cargo ---
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# --- cargo-packager output ---
+/dist
+/.cargo-packager
+
+# --- Whisper model cache (downloaded at runtime; never commit) ---
+/models
+*.bin
+*.gguf
+*.ggml
+
+# --- IDE / editor ---
+.claude/
+.vscode/
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# --- OS ---
+desktop.ini
+
+# --- Local runtime state ---
+.log/
+*.log
+wipser.pid
+config.local.json
+
+# --- Secrets / env ---
+.env
+.env.local
+*.pem
+*.key

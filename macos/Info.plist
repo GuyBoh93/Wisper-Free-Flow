@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Identity ============================================== -->
+    <key>CFBundleIdentifier</key>
+    <string>io.whisperfreeflow.app</string>
+    <key>CFBundleName</key>
+    <string>Whisper FreeFlow</string>
+    <key>CFBundleDisplayName</key>
+    <string>Whisper FreeFlow</string>
+    <key>CFBundleExecutable</key>
+    <string>whisper-freeflow</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <!-- Versioning is overwritten by cargo-packager at build time, but
+         we provide sensible defaults so the bundle is valid in isolation. -->
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.5</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.5</string>
+
+    <!-- Runtime requirements ================================== -->
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <!-- Menu-bar app only: no Dock icon, no entry in the app
+         switcher. macOS reads this BEFORE our Rust code runs, which is
+         why tao's ActivationPolicy::Accessory alone isn't enough. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Permission prompts ==================================== -->
+    <!-- Required for cpal to record from the default input device.
+         Without this key, macOS denies microphone access silently. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Whisper FreeFlow needs microphone access to transcribe your speech into text at the cursor.</string>
+
+    <!-- Accessibility (rdev::grab for global hotkeys + enigo for
+         keystroke injection) is granted from System Settings →
+         Privacy & Security → Accessibility. No Info.plist key
+         controls that prompt; macOS surfaces it on first use.       -->
+</dict>
+</plist>
