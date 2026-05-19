@@ -14,6 +14,11 @@ pub struct Config {
     #[serde(default = "default_language")]
     pub language: String,
     pub autostart: bool,
+    /// Preferred input device by cpal device name. `None` keeps the system
+    /// default; if the named device is missing at start time, recorder logs
+    /// a warning and falls back to default instead of erroring.
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 fn default_language() -> String {
@@ -28,6 +33,7 @@ impl Default for Config {
             whisper_device: "cpu".into(),
             language: default_language(),
             autostart: true,
+            input_device: None,
         }
     }
 }

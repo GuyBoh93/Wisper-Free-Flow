@@ -7,6 +7,7 @@
 // loop must be pumped. We use `tao::EventLoop` for that — it routes menu
 // events through `MenuEvent::receiver()` exactly like on Windows.
 
+use crate::recorder::list_input_devices;
 use anyhow::{Context, Result};
 use std::sync::mpsc::Sender;
 use tray_icon::{
@@ -23,6 +24,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 pub enum ControlEvent {
     SwitchModel(String),
     SetAutostart(bool),
+    /// `None` = system default; `Some(name)` = match by cpal device name.
+    SetInputDevice(Option<String>),
+    /// Abort the current transcription (if any). The whisper inference keeps
+    /// running but its result is discarded instead of being typed.
+    CancelTranscription,
 }
 
 /// Models offered in the tray submenu. (id, label)
@@ -43,13 +49,44 @@ struct ModelEntry {
     item: CheckMenuItem,
 }
 
+/// One row in the microphone submenu. `name = None` represents the "System
+/// default" row (uses cpal's `default_input_device()`); `Some(_)` is a named
+/// device. Stored in a Vec so the click handler can resolve clicked ids
+/// and update radio check marks.
+struct MicEntry {
+    id: MenuId,
+    name: Option<String>,
+    item: CheckMenuItem,
+}
+
+/// Bundle of everything `install()` hands back to the platform-specific pump.
+/// Grouped into a struct so adding new menu items doesn't churn every
+/// function signature.
+struct TrayHandles {
+    tray: TrayIcon,
+    quit_id: MenuId,
+    cancel_id: MenuId,
+    models: Vec<ModelEntry>,
+    mics: Vec<MicEntry>,
+    autostart_item: CheckMenuItem,
+}
+
 #[cfg(target_os = "windows")]
 pub fn run_until_quit(
     initial_model: String,
     initial_autostart: bool,
+    initial_mic: Option<String>,
     ctrl_tx: Sender<ControlEvent>,
 ) -> Result<()> {
-    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
+    let handles = install(&initial_model, initial_autostart, initial_mic.as_deref())?;
+    let TrayHandles {
+        tray,
+        quit_id,
+        cancel_id,
+        models,
+        mics,
+        autostart_item,
+    } = handles;
     let _tray_guard = tray;
 
     let rx = MenuEvent::receiver();
@@ -68,8 +105,17 @@ pub fn run_until_quit(
                     tracing::info!("quit requested from tray");
                     return Ok(());
                 }
+                if event.id == cancel_id {
+                    tracing::info!("tray: cancel transcription");
+                    let _ = ctrl_tx.send(ControlEvent::CancelTranscription);
+                    continue;
+                }
                 if event.id == autostart_id {
                     handle_autostart_click(&autostart_item, &ctrl_tx);
+                    continue;
+                }
+                if mics.iter().any(|m| m.id == event.id) {
+                    handle_mic_click(&event.id, &mics, &ctrl_tx);
                     continue;
                 }
                 handle_model_click(&event.id, &models, &ctrl_tx);
@@ -84,6 +130,7 @@ pub fn run_until_quit(
 pub fn run_until_quit(
     initial_model: String,
     initial_autostart: bool,
+    initial_mic: Option<String>,
     ctrl_tx: Sender<ControlEvent>,
 ) -> Result<()> {
     use tao::event::Event;
@@ -94,7 +141,15 @@ pub fn run_until_quit(
     event_loop_builder.with_activation_policy(ActivationPolicy::Accessory);
     let event_loop = event_loop_builder.build();
 
-    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
+    let handles = install(&initial_model, initial_autostart, initial_mic.as_deref())?;
+    let TrayHandles {
+        tray,
+        quit_id,
+        cancel_id,
+        models,
+        mics,
+        autostart_item,
+    } = handles;
     let _tray_guard = tray;
 
     let autostart_id = autostart_item.id().clone();
@@ -107,8 +162,12 @@ pub fn run_until_quit(
                 if menu_event.id == quit_id {
                     tracing::info!("quit requested from tray");
                     *control_flow = ControlFlow::Exit;
+                } else if menu_event.id == cancel_id {
+                    let _ = ctrl_tx.send(ControlEvent::CancelTranscription);
                 } else if menu_event.id == autostart_id {
                     handle_autostart_click(&autostart_item, &ctrl_tx);
+                } else if mics.iter().any(|m| m.id == menu_event.id) {
+                    handle_mic_click(&menu_event.id, &mics, &ctrl_tx);
                 } else {
                     handle_model_click(&menu_event.id, &models, &ctrl_tx);
                 }
@@ -121,9 +180,18 @@ pub fn run_until_quit(
 pub fn run_until_quit(
     initial_model: String,
     initial_autostart: bool,
+    initial_mic: Option<String>,
     ctrl_tx: Sender<ControlEvent>,
 ) -> Result<()> {
-    let (tray, quit_id, models, autostart_item) = install(&initial_model, initial_autostart)?;
+    let handles = install(&initial_model, initial_autostart, initial_mic.as_deref())?;
+    let TrayHandles {
+        tray,
+        quit_id,
+        cancel_id,
+        models,
+        mics,
+        autostart_item,
+    } = handles;
     let _tray_guard = tray;
 
     let autostart_id = autostart_item.id().clone();
@@ -132,8 +200,16 @@ pub fn run_until_quit(
         if event.id == quit_id {
             return Ok(());
         }
+        if event.id == cancel_id {
+            let _ = ctrl_tx.send(ControlEvent::CancelTranscription);
+            continue;
+        }
         if event.id == autostart_id {
             handle_autostart_click(&autostart_item, &ctrl_tx);
+            continue;
+        }
+        if mics.iter().any(|m| m.id == event.id) {
+            handle_mic_click(&event.id, &mics, &ctrl_tx);
             continue;
         }
         handle_model_click(&event.id, &models, &ctrl_tx);
@@ -151,6 +227,23 @@ fn handle_autostart_click(item: &CheckMenuItem, ctrl_tx: &Sender<ControlEvent>) 
         tracing::error!("worker disconnected — can't update autostart");
         // Revert the tick so the menu state still reflects reality.
         item.set_checked(!new_state);
+    }
+}
+
+fn handle_mic_click(id: &MenuId, mics: &[MicEntry], ctrl_tx: &Sender<ControlEvent>) {
+    let Some(picked) = mics.iter().find(|m| &m.id == id) else {
+        return;
+    };
+    for m in mics {
+        m.item.set_checked(m.id == *id);
+    }
+    let label = picked.name.as_deref().unwrap_or("(system default)");
+    tracing::info!("tray: switching input device -> {label}");
+    if ctrl_tx
+        .send(ControlEvent::SetInputDevice(picked.name.clone()))
+        .is_err()
+    {
+        tracing::error!("worker disconnected — can't switch input device");
     }
 }
 
@@ -174,7 +267,8 @@ fn handle_model_click(id: &MenuId, models: &[ModelEntry], ctrl_tx: &Sender<Contr
 fn install(
     initial_model: &str,
     initial_autostart: bool,
-) -> Result<(TrayIcon, MenuId, Vec<ModelEntry>, CheckMenuItem)> {
+    initial_mic: Option<&str>,
+) -> Result<TrayHandles> {
     let menu = Menu::new();
 
     let version_label = MenuItem::new(
@@ -190,8 +284,72 @@ fn install(
     let autostart_item = CheckMenuItem::new("Start at login", true, initial_autostart, None);
     menu.append(&autostart_item)
         .context("appending autostart toggle")?;
+
+    // "Cancel transcription" is always enabled; the worker just ignores it
+    // when there's nothing to cancel. Wiring up dynamic enable/disable would
+    // require menu-state updates on every overlay transition, which isn't
+    // worth the complexity for a button that costs nothing to mis-click.
+    let cancel_item = MenuItem::new("Cancel transcription", true, None);
+    let cancel_id = cancel_item.id().clone();
+    menu.append(&cancel_item)
+        .context("appending cancel item")?;
+
     menu.append(&PredefinedMenuItem::separator())
         .context("appending separator")?;
+
+    // Mic submenu. Built once at startup — devices that arrive/leave later
+    // won't show up until the next launch. Selecting one persists to config
+    // via ControlEvent::SetInputDevice.
+    let mic_submenu = Submenu::new("Microphone", true);
+    let mut mics: Vec<MicEntry> = Vec::new();
+
+    let default_checked = initial_mic.is_none();
+    let default_item = CheckMenuItem::new("System default", true, default_checked, None);
+    let default_id = default_item.id().clone();
+    mic_submenu
+        .append(&default_item)
+        .context("appending default mic item")?;
+    mics.push(MicEntry {
+        id: default_id,
+        name: None,
+        item: default_item,
+    });
+
+    let device_names = list_input_devices();
+    if !device_names.is_empty() {
+        mic_submenu
+            .append(&PredefinedMenuItem::separator())
+            .context("appending mic separator")?;
+    }
+    let mut saved_mic_found = initial_mic.is_none();
+    for name in device_names {
+        let checked = initial_mic == Some(name.as_str());
+        if checked {
+            saved_mic_found = true;
+        }
+        let item = CheckMenuItem::new(&name, true, checked, None);
+        let id = item.id().clone();
+        mic_submenu
+            .append(&item)
+            .context("appending mic item")?;
+        mics.push(MicEntry {
+            id,
+            name: Some(name),
+            item,
+        });
+    }
+    if !saved_mic_found {
+        tracing::warn!(
+            "configured input device `{}` not found on this system; falling back to system default",
+            initial_mic.unwrap_or("")
+        );
+        // Re-tick "System default" so the menu reflects what's actually used.
+        if let Some(m) = mics.first() {
+            m.item.set_checked(true);
+        }
+    }
+    menu.append(&mic_submenu)
+        .context("appending mic submenu")?;
 
     let model_submenu = Submenu::new("Model", true);
     let mut models = Vec::with_capacity(MODELS.len());
@@ -242,7 +400,14 @@ fn install(
         .context("building tray icon")?;
 
     tracing::info!("tray icon installed");
-    Ok((tray, quit_id, models, autostart_item))
+    Ok(TrayHandles {
+        tray,
+        quit_id,
+        cancel_id,
+        models,
+        mics,
+        autostart_item,
+    })
 }
 
 // Renders the Wispr FreeFlow logo mark — five rounded "waveform" bars from

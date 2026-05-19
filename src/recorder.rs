@@ -14,25 +14,46 @@ pub fn has_input_device() -> bool {
     cpal::default_host().default_input_device().is_some()
 }
 
+/// Enumerated input device names for the tray "Microphone" submenu. cpal can
+/// fail to query individual devices on some Windows hosts (driver weirdness),
+/// so we just skip those rather than aborting the whole list.
+pub fn list_input_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    match host.input_devices() {
+        Ok(it) => it.filter_map(|d| d.name().ok()).collect(),
+        Err(e) => {
+            tracing::warn!("listing input devices failed: {e}");
+            Vec::new()
+        }
+    }
+}
+
 pub struct Recorder {
     stream: Option<cpal::Stream>,
     buffer: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
+    /// User-selected device name, or `None` to use the system default.
+    /// Updated live from the tray; takes effect on the next recording start.
+    preferred_device: Option<String>,
 }
 
 impl Recorder {
-    pub fn new() -> Self {
+    pub fn new(preferred_device: Option<String>) -> Self {
         Self {
             stream: None,
             buffer: Arc::new(Mutex::new(Vec::with_capacity(16_000 * 30))),
             sample_rate: 0,
+            preferred_device,
         }
+    }
+
+    pub fn set_preferred_device(&mut self, name: Option<String>) {
+        self.preferred_device = name;
     }
 
     pub fn start(&mut self) -> Result<()> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
+        let device = pick_device(&host, self.preferred_device.as_deref())
             .context("no default input device")?;
         let supported = device.default_input_config()?;
 
@@ -139,6 +160,23 @@ impl RecordedAudio {
             self.samples.len() as f32 / self.sample_rate as f32
         }
     }
+}
+
+// Resolve the recording device: try the user's named preference first, fall
+// back to the system default if it's missing (unplugged, disabled). Logging
+// the fallback gives the user a breadcrumb when their headset disappears.
+fn pick_device(host: &cpal::Host, preferred: Option<&str>) -> Option<cpal::Device> {
+    if let Some(name) = preferred {
+        if let Ok(it) = host.input_devices() {
+            for d in it {
+                if d.name().ok().as_deref() == Some(name) {
+                    return Some(d);
+                }
+            }
+        }
+        tracing::warn!("preferred input device `{name}` not found; using system default");
+    }
+    host.default_input_device()
 }
 
 fn ingest_f32(data: &[f32], channels: u16, buffer: &Mutex<Vec<f32>>) {

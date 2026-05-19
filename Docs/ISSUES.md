@@ -1,17 +1,30 @@
 # Known Issues / Feature Requests
 
-## Cannot cancel an in-progress transcription
+## Cannot cancel an in-progress transcription — FIXED 2026-05-19
 
-After releasing the hotkey, transcription runs to completion with no way to abort. On larger models (`small.en`, `medium.en`) this can take many seconds, during which the user is stuck waiting — they may have already moved on, switched windows, or no longer want the text injected.
+After releasing the hotkey, transcription used to block the worker loop with no way to bail out. On `small.en` / `medium.en` this could mean many seconds of forced wait, after which unwanted text would land at the cursor even if the user had already moved on.
 
-**Needed:** a way to cancel a transcription in progress.
+Fix:
+1. **Off-thread inference.** `app::worker_loop` now spawns a short-lived thread for each transcribe call and holds a `Pending { rx, cancel }` (`src/app.rs`). The worker keeps polling hotkey + tray events while inference runs, so the UI stays responsive.
+2. **Re-press to cancel.** Pressing the hotkey again while the overlay is in `Processing` state sets the `cancel` AtomicBool. When the inference thread eventually finishes, the worker checks the flag and drops the text instead of typing it. The cancel gesture is checked before the start-recording path so it doesn't immediately start a new recording on top of the cancel.
+3. **Tray menu item.** Added "Cancel transcription" (`src/tray.rs`) which sends `ControlEvent::CancelTranscription` — the worker handles it the same way as a re-press. Always enabled; ignored when nothing is pending.
+4. **Model switch.** Switching model mid-transcription now also flags the pending result as cancelled (`SwitchModel` handler) so the old transcriber's output doesn't get typed after a swap.
 
-Ideas:
-- Press Esc (or re-tap the hotkey) while the "processing" overlay is showing to abort.
-- Tray menu item: "Cancel current transcription".
-- Internally: whisper-rs runs sync; cancellation likely needs an abort flag checked between segments, or running inference on a thread we can detach/drop the result from. Simplest first pass: keep inference running but discard the result if a cancel was requested before typing — saves the user from unwanted text injection even if it doesn't free the CPU immediately.
+Caveat: whisper.cpp doesn't expose mid-segment abort in `whisper-rs` 0.16, so the CPU keeps spinning on the discarded inference until it completes naturally. The user-visible problem (unwanted text injection + frozen UI) is gone; a future enhancement could plumb whisper's abort callback through for true mid-flight cancellation.
 
-Repro: set `whisper_model` to `medium.en`, record a few seconds of speech, release. No way to bail out during processing.
+Repro: set `whisper_model` to `medium.en`, hold the hotkey for a few seconds, release. While the dots are showing, tap the hotkey once — log shows `"cancel requested"`, overlay closes, no text is typed.
+
+## No way to choose the input microphone — FIXED 2026-05-19
+
+Recorder used to be hard-wired to the system default input device, which on multi-mic setups (built-in array + headset + USB condenser + webcam) was rarely the one the user actually wanted for dictation.
+
+Fix:
+1. **Config field.** New `input_device: Option<String>` in `src/config.rs`; `None` means "use system default" (preserves prior behaviour), `Some(name)` matches by cpal device name.
+2. **Tray submenu.** "Microphone ▸" submenu (`src/tray.rs`) lists "System default" plus each detected input device, with the current selection ticked. Clicking one sends `ControlEvent::SetInputDevice(Option<String>)` to the worker, which updates the recorder's `preferred_device` and persists the config. Built once at startup — devices that arrive/leave later won't show up until the next launch.
+3. **Graceful fallback.** `recorder::pick_device()` tries the named device first and falls back to the system default with a warning if it's missing (unplugged headset, disabled in OS settings). The tray menu also re-ticks "System default" at startup if the saved device name can't be found.
+4. **Enumeration helper.** New `recorder::list_input_devices()` used by the tray to build the submenu; tolerates per-device query failures rather than aborting the whole list.
+
+Repro: pick a non-default mic from the tray submenu. Hold the hotkey — log shows the selected device name and audio captures from it. Unplug that device, hold the hotkey — log shows the fallback warning and recording uses the system default.
 
 ## No way to choose the input microphone
 

@@ -1,6 +1,6 @@
 [package]
 name = "whisper-freeflow"
-version = "0.1.7"
+version = "0.2.0"
 edition = "2024"
 description = "Open-source push-to-talk dictation. Hold a key, speak, release — text appears at your cursor."
 license = "MIT"
