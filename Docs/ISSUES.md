@@ -52,6 +52,17 @@ Ideas:
 - Or add a distinct `OverlayState::LoadingModel { name: String }` variant so the renderer can pick the text itself and we keep transcription's `Processing` clean.
 - While we're there, consider a similar caption for the transcription phase ("Transcribing…") so the two states are visually distinguishable.
 
+## App had no graceful handling for "no microphone present" — FIXED 2026-05-19
+
+Symptom: running on a machine with no input device (no built-in mic, no headset, mic disabled in Windows privacy settings) gave no feedback — pressing the hotkey silently logged an error and nothing happened. Reported as "crashes instantly" on a mic-less test PC.
+
+Fix:
+1. **Startup probe.** `app::worker_loop` now calls `recorder::has_input_device()` on entry and, if it returns false, flashes a new `OverlayState::NoMic` pill for 2 seconds so the user sees the problem immediately at launch instead of finding out later (`src/app.rs`).
+2. **Hotkey-press guard.** Before calling `Recorder::start()`, the worker re-checks `has_input_device()`; if absent (mic unplugged after launch), it shows the NoMic indicator and skips the cpal stream build. If `Recorder::start()` itself errors, it falls through to the same indicator. The 2-second hold (`NO_MIC_HOLD`) auto-clears back to Idle.
+3. **NoMic glyph.** New `draw_no_mic` in `src/overlay.rs` renders a microphone capsule + U-stand with a red diagonal slash — clear at a glance, no text rendering required.
+
+Repro: disable the default recording device in `mmsys.cpl` (Recording tab → right-click → Disable), launch the app — the slashed-mic pill appears for 2 s. Press the hotkey — it appears again. Re-enable the mic and dictation works normally.
+
 ## Autostart didn't survive moving / reinstalling the exe — FIXED 2026-05-15
 
 Symptom: app failed to launch at login after install. Root cause was two-fold:

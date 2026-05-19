@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Mirror of src/overlay.rs draw_no_mic() — 140x44 pill, 2x scale for visibility -->
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="88" viewBox="0 0 140 44">
+  <!-- Pill body -->
+  <rect x="0" y="0" width="140" height="44" rx="22" ry="22" fill="rgb(18,20,28)" fill-opacity="0.871"/>
+  <!-- Glassy top-edge highlight -->
+  <rect x="0.5" y="0.5" width="139" height="43" rx="21.5" ry="21.5" fill="none" stroke="rgb(255,255,255)" stroke-opacity="0.102" stroke-width="1"/>
+
+  <!-- Mic capsule: bx=64, by=9, 12x22, r=6 -->
+  <rect x="64" y="9" width="12" height="22" rx="6" ry="6" fill="rgb(220,226,240)" fill-opacity="0.922"/>
+  <!-- U-stand arc: quad from (59,32) ctrl (70,48) to (81,32), stroke 2 -->
+  <path d="M 59 32 Q 70 48 81 32" fill="none" stroke="rgb(220,226,240)" stroke-opacity="0.922" stroke-width="2"/>
+  <!-- Stand base bar: 14 x 2.5 centered, y = 42 -->
+  <rect x="63" y="42" width="14" height="2.5" rx="1.25" ry="1.25" fill="rgb(220,226,240)" fill-opacity="0.922"/>
+
+  <!-- Red diagonal slash: 36 long x 4 wide capsule, centered at (70,22), rotated -45° -->
+  <g transform="translate(70 22) rotate(-45)">
+    <rect x="-18" y="-2" width="36" height="4" rx="2" ry="2" fill="rgb(255,80,90)"/>
+  </g>
+</svg>

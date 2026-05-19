@@ -13,6 +13,7 @@ pub enum OverlayState {
     Idle,
     Recording,
     Processing,
+    NoMic,
 }
 
 pub struct OverlaySharedInner {
@@ -250,6 +251,7 @@ mod win32 {
                     OverlayState::Recording => 0.0,
                     OverlayState::Processing => 1.0,
                     OverlayState::Idle => 0.0,
+                    OverlayState::NoMic => 0.0,
                 };
             }
 
@@ -319,8 +321,87 @@ mod win32 {
                 .stroke_path(&p, &paint, &stroke, Transform::identity(), None);
         }
 
-        if state != OverlayState::Idle {
-            draw_visualizer(&mut ctx.pixmap, ctx.phase, level, ctx.morph);
+        match state {
+            OverlayState::Idle => {}
+            OverlayState::NoMic => draw_no_mic(&mut ctx.pixmap),
+            OverlayState::Recording | OverlayState::Processing => {
+                draw_visualizer(&mut ctx.pixmap, ctx.phase, level, ctx.morph);
+            }
+        }
+    }
+
+    // Slashed-microphone glyph: capsule mic body, stand, and a red diagonal
+    // strike. Geometry is hand-tuned for the 140x44 pill — change the pill
+    // dims and these will need re-centering.
+    fn draw_no_mic(pixmap: &mut Pixmap) {
+        let mid_x = WIDTH as f32 / 2.0;
+        let mid_y = HEIGHT as f32 / 2.0;
+
+        // Mic body: vertical capsule.
+        let body_w: f32 = 12.0;
+        let body_h: f32 = 22.0;
+        let bx = mid_x - body_w / 2.0;
+        let by = mid_y - body_h / 2.0 - 2.0;
+        if let Some(p) = rounded_rect_path(bx, by, body_w, body_h, body_w / 2.0) {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(220, 226, 240, 235);
+            paint.anti_alias = true;
+            pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+
+        // U-shaped stand: shallow arc under the body, plus a short stem and
+        // base bar. Drawn as a thick stroke for the arc and a filled pill for
+        // the base, keeping the primitive set small.
+        let arc_y = by + body_h + 1.0;
+        let arc_w: f32 = 22.0;
+        let arc_h: f32 = 8.0;
+        let arc_x = mid_x - arc_w / 2.0;
+        let mut arc = PathBuilder::new();
+        arc.move_to(arc_x, arc_y);
+        arc.quad_to(mid_x, arc_y + arc_h * 2.0, arc_x + arc_w, arc_y);
+        if let Some(path) = arc.finish() {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(220, 226, 240, 235);
+            paint.anti_alias = true;
+            let stroke = Stroke { width: 2.0, ..Default::default() };
+            pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+        }
+        // Base bar.
+        let base_w: f32 = 14.0;
+        let base_h: f32 = 2.5;
+        if let Some(p) = rounded_rect_path(
+            mid_x - base_w / 2.0,
+            arc_y + arc_h + 2.0,
+            base_w,
+            base_h,
+            base_h / 2.0,
+        ) {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(220, 226, 240, 235);
+            paint.anti_alias = true;
+            pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+
+        // Red diagonal slash across the whole glyph. Drawn as a filled capsule
+        // (rotated rect) so it gets anti-aliased edges and a uniform width
+        // without needing a thick stroke + cap geometry.
+        let slash_len: f32 = 36.0;
+        let slash_w: f32 = 4.0;
+        let angle = -45f32.to_radians();
+        let cos = angle.cos();
+        let sin = angle.sin();
+        if let Some(p) = rounded_rect_path(
+            -slash_len / 2.0,
+            -slash_w / 2.0,
+            slash_len,
+            slash_w,
+            slash_w / 2.0,
+        ) {
+            let transform = Transform::from_row(cos, sin, -sin, cos, mid_x, mid_y);
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(255, 80, 90, 255);
+            paint.anti_alias = true;
+            pixmap.fill_path(&p, &paint, FillRule::Winding, transform, None);
         }
     }
 

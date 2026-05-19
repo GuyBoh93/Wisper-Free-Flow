@@ -20,6 +20,12 @@ path = "src/main.rs"
 name = "gen_icon"
 path = "tools/gen_icon.rs"
 
+# Renders the "no mic" overlay glyph to Docs/no-mic-preview.png for design review.
+#   cargo run --example gen_no_mic_preview
+[[example]]
+name = "gen_no_mic_preview"
+path = "tools/gen_no_mic_preview.rs"
+
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

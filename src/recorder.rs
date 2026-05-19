@@ -7,6 +7,13 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+/// True if cpal can see a default input device right now. Used to flash the
+/// "no mic" overlay instead of silently failing on machines without a mic
+/// (or where the user has unplugged / disabled the only one).
+pub fn has_input_device() -> bool {
+    cpal::default_host().default_input_device().is_some()
+}
+
 pub struct Recorder {
     stream: Option<cpal::Stream>,
     buffer: Arc<Mutex<Vec<f32>>>,

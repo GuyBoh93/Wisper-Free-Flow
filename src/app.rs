@@ -6,13 +6,18 @@ use crate::autostart;
 use crate::config::{Config, models_dir};
 use crate::hotkey::{HotkeyEvent, spawn_listener};
 use crate::overlay::{OverlayState, SharedOverlay};
-use crate::recorder::Recorder;
+use crate::recorder::{Recorder, has_input_device};
 use crate::transcriber::{Transcriber, ensure_model};
 use crate::tray::ControlEvent;
 use crate::typer::type_text;
 use anyhow::Result;
 use std::sync::mpsc::Receiver;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+// How long the "no mic" overlay stays up after a failed start before
+// reverting to Idle. Long enough to be noticed, short enough to disappear
+// before the user tries again.
+const NO_MIC_HOLD: Duration = Duration::from_secs(2);
 
 pub fn worker_loop(
     mut cfg: Config,
@@ -26,10 +31,29 @@ pub fn worker_loop(
 
     let events = spawn_listener(&cfg.hotkey)?;
     let mut recorder = Recorder::new();
+    let mut no_mic_until: Option<Instant> = None;
+
+    // One-shot startup probe so the user sees the warning immediately on a
+    // mic-less machine instead of finding out the first time they hit the
+    // hotkey. The overlay auto-hides after NO_MIC_HOLD.
+    if !has_input_device() {
+        tracing::warn!("no input device detected at startup");
+        set_state(&shared, OverlayState::NoMic);
+        no_mic_until = Some(Instant::now() + NO_MIC_HOLD);
+    }
 
     tracing::info!("ready — hold [{}] to dictate", cfg.hotkey);
 
     loop {
+        // Drop the NoMic indicator once its hold window has elapsed.
+        if let Some(deadline) = no_mic_until {
+            if Instant::now() >= deadline {
+                no_mic_until = None;
+                if shared.lock().state == OverlayState::NoMic {
+                    set_state(&shared, OverlayState::Idle);
+                }
+            }
+        }
         // Drain any pending tray control events. Each iteration of the outer
         // loop runs every ~33ms so this is responsive enough; model reloads
         // block this loop for as long as ensure_model + Transcriber::load
@@ -85,8 +109,19 @@ pub fn worker_loop(
         match events.recv_timeout(Duration::from_millis(33)) {
             Ok(HotkeyEvent::Pressed) => {
                 if !recorder.is_recording() {
+                    // Fast path: no input device at all. Skip cpal entirely so
+                    // we don't show "recording" for a stream that can never
+                    // produce samples.
+                    if !has_input_device() {
+                        tracing::warn!("hotkey pressed with no input device available");
+                        set_state(&shared, OverlayState::NoMic);
+                        no_mic_until = Some(Instant::now() + NO_MIC_HOLD);
+                        continue;
+                    }
                     if let Err(e) = recorder.start() {
                         tracing::error!("failed to start recording: {e:#}");
+                        set_state(&shared, OverlayState::NoMic);
+                        no_mic_until = Some(Instant::now() + NO_MIC_HOLD);
                         continue;
                     }
                     tracing::info!("recording…");
