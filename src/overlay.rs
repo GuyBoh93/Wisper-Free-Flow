@@ -19,6 +19,10 @@ pub enum OverlayState {
 pub struct OverlaySharedInner {
     pub state: OverlayState,
     pub audio_level: f32,
+    /// 0.0..=1.0. Driven by whisper's progress callback during Processing;
+    /// reset to 0 when entering Idle (so the next session starts clean
+    /// instead of flashing the previous run's fill).
+    pub progress: f32,
 }
 
 pub type SharedOverlay = Arc<Mutex<OverlaySharedInner>>;
@@ -27,6 +31,7 @@ pub fn new_shared() -> SharedOverlay {
     Arc::new(Mutex::new(OverlaySharedInner {
         state: OverlayState::Idle,
         audio_level: 0.0,
+        progress: 0.0,
     }))
 }
 
@@ -278,9 +283,9 @@ mod win32 {
     }
 
     fn render(ctx: &mut Ctx) {
-        let (state, level) = {
+        let (state, level, progress) = {
             let s = ctx.shared.lock();
-            (s.state, s.audio_level)
+            (s.state, s.audio_level, s.progress)
         };
 
         ctx.pixmap.fill(Color::TRANSPARENT);
@@ -324,8 +329,44 @@ mod win32 {
         match state {
             OverlayState::Idle => {}
             OverlayState::NoMic => draw_no_mic(&mut ctx.pixmap),
-            OverlayState::Recording | OverlayState::Processing => {
+            OverlayState::Recording => {
                 draw_visualizer(&mut ctx.pixmap, ctx.phase, level, ctx.morph);
+            }
+            OverlayState::Processing => {
+                draw_visualizer(&mut ctx.pixmap, ctx.phase, level, ctx.morph);
+                draw_progress_bar(&mut ctx.pixmap, progress);
+            }
+        }
+    }
+
+    // Thin progress bar at the bottom inside-edge of the pill. Sits below the
+    // dots so the "alive" animation continues to read; the bar adds the
+    // "how much longer?" cue the user needs. ~3px tall is enough to be
+    // legible without competing with the visualiser for vertical space.
+    fn draw_progress_bar(pixmap: &mut Pixmap, progress: f32) {
+        let progress = progress.clamp(0.0, 1.0);
+        let bar_h: f32 = 3.0;
+        let inset: f32 = 12.0;
+        let y = HEIGHT as f32 - bar_h - 4.0;
+        let track_w = WIDTH as f32 - 2.0 * inset;
+
+        // Faint track so the bar's extent is visible even at 0% progress.
+        if let Some(p) = rounded_rect_path(inset, y, track_w, bar_h, bar_h / 2.0) {
+            let mut paint = Paint::default();
+            paint.set_color_rgba8(255, 255, 255, 38);
+            paint.anti_alias = true;
+            pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
+        }
+
+        // Filled portion — same blue family as the visualiser pips so the two
+        // elements feel like one indicator instead of two.
+        let fill_w = (track_w * progress).max(0.0);
+        if fill_w > 0.5 {
+            if let Some(p) = rounded_rect_path(inset, y, fill_w, bar_h, bar_h / 2.0) {
+                let mut paint = Paint::default();
+                paint.set_color_rgba8(200, 222, 255, 240);
+                paint.anti_alias = true;
+                pixmap.fill_path(&p, &paint, FillRule::Winding, Transform::identity(), None);
             }
         }
     }

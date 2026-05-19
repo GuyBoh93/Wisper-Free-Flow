@@ -1,6 +1,6 @@
 [package]
 name = "whisper-freeflow"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Open-source push-to-talk dictation. Hold a key, speak, release — text appears at your cursor."
 license = "MIT"
@@ -34,6 +34,11 @@ dirs = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 parking_lot = "0.12"
+
+# Physical (not logical) core count for whisper's n_threads. Hyperthread
+# siblings share the AVX unit, so using logical cores actually slows
+# AVX-heavy inference on most CPUs.
+num_cpus = "1"
 
 # Audio capture
 cpal = "0.15"
@@ -69,6 +74,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
     "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
 ] }
 
 # macOS-only: tray-icon and overlay need a Cocoa-driven event loop on the

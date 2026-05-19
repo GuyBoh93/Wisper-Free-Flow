@@ -20,7 +20,13 @@ impl Transcriber {
         Ok(Self { ctx })
     }
 
-    pub fn transcribe(&self, samples_16k_mono: &[f32], language: &str) -> Result<String> {
+    pub fn transcribe(
+        &self,
+        samples_16k_mono: &[f32],
+        language: &str,
+        on_progress: impl FnMut(i32) + 'static,
+        should_abort: impl FnMut() -> bool + 'static,
+    ) -> Result<String> {
         let mut state = self.ctx.create_state()?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_print_progress(false);
@@ -30,6 +36,10 @@ impl Transcriber {
         params.set_suppress_blank(true);
         params.set_no_timestamps(true);
         params.set_single_segment(true);
+        // No prior-utterance conditioning — each press is independent
+        // dictation, so reusing decoded text across calls is a latency
+        // tax with no quality upside.
+        params.set_no_context(true);
         // Empty or "auto" → don't pin a language; whisper.cpp will detect it
         // (only useful with multilingual models — `.en` models ignore this).
         if !language.is_empty() && language != "auto" {
@@ -39,11 +49,20 @@ impl Transcriber {
         // Default is 1500; 768 is plenty for typical dictation phrases and gives
         // ~2x speedup. Increase if accuracy on long utterances suffers.
         params.set_audio_ctx(768);
-        params.set_n_threads(
-            std::thread::available_parallelism()
-                .map(|n| n.get() as i32)
-                .unwrap_or(4),
-        );
+        // Physical (not logical) cores: hyperthread siblings share an AVX
+        // execution unit and contend for it during whisper's matmul, so
+        // 16 logical threads on an 8-core CPU is typically slower than 8.
+        // Fall back to logical count if physical detection fails.
+        let n_threads = match num_cpus::get_physical() {
+            0 => num_cpus::get().max(1),
+            n => n,
+        } as i32;
+        params.set_n_threads(n_threads);
+        // Callbacks: progress (0..100) feeds the overlay's progress bar;
+        // abort returning true stops whisper.cpp at its next check point,
+        // freeing the CPU on cancel instead of letting inference run out.
+        params.set_progress_callback_safe(on_progress);
+        params.set_abort_callback_safe(should_abort);
 
         state.full(params, samples_16k_mono)?;
 

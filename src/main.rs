@@ -11,6 +11,7 @@ mod autostart;
 mod config;
 mod hotkey;
 mod overlay;
+mod priority;
 mod recorder;
 mod transcriber;
 mod tray;

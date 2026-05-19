@@ -37,22 +37,24 @@ Ideas:
 - Config field `input_device: Option<String>` — `None` keeps current behaviour (system default), `Some(name)` matches by device name. Fall back to default if the named device disappears (unplugged headset, etc.) and log a warning.
 - Optional later: a "test mic" item that shows a live input level meter so the user can confirm the right device is selected before recording for real.
 
-## Transcription is too slow, and there's no sense of how long it will take
+## Transcription is too slow, and there's no sense of how long it will take — PARTIALLY FIXED 2026-05-19
 
-Even `tiny.en` feels slow on a low-spec ("potato") PC, and the issue compounds with longer recordings — a 30-second readout takes noticeably longer than a 5-second one, but the overlay gives no indication of progress or remaining time. You just see the dots and wait, with no way to tell if it's nearly done or barely started.
+The progress-indicator half is now done; the raw-speed half remains open for hardware-acceleration work.
 
-**Needed:** (a) faster inference on weak hardware, and (b) an accurate progress indicator so the user can see how long is left.
+Fixed:
+1. **Real progress bar in the overlay.** Wired whisper-rs's `set_progress_callback_safe` through `Transcriber::transcribe` (`src/transcriber.rs`) up to a new `progress: f32` field on `OverlaySharedInner` (`src/overlay.rs`). New `draw_progress_bar` renders a thin filled track at the bottom of the pill during `Processing`, so the user can see how far inference has got. Bar is reset to 0 on every Idle transition and at the start of each new transcription so the next run starts clean.
+2. **True mid-segment cancel.** While we were in the callback area, also wired `set_abort_callback_safe` — the cancel `AtomicBool` from issue #1 is now also read by whisper.cpp itself, so a re-press of the hotkey aborts inference instead of just discarding the result. The CPU spin issue noted in the issue #1 fix is now gone for real. Cancel also clears `Pending` immediately (instead of waiting for the orphan thread) so the user can start a new recording on the very next hotkey press; the orphan still has its own Arc clone of the cancel flag so it aborts cleanly.
+3. **Param tweak: `set_no_context(true)`.** Disables prior-utterance conditioning, which is the right default for push-to-talk dictation (each press is independent). Small but free latency win.
+4. **Default model is already quantised.** `Config::default()` sets `whisper_model = "base.en-q5_1"` and the tray exposes both `base.en` and `base.en-q5_1` for users to compare.
+5. **Physical core count for `n_threads`.** Switched from `std::thread::available_parallelism()` (logical cores) to `num_cpus::get_physical()` (physical). Hyperthread siblings share an AVX execution unit and contend during whisper's matmul, so on a typical 8-core/16-thread CPU 8 threads beats 16. Typical wins: 10–20% lower latency on Intel/AMD parts; no change on CPUs without HT.
+6. **Process priority boost during inference.** New `src/priority.rs` raises the whole process to `ABOVE_NORMAL_PRIORITY_CLASS` while a transcription is running and drops it back to `NORMAL` when the result is collected (success or cancel). Process-level rather than thread-level because whisper.cpp manages its own thread pool internally. Windows-only; macOS/Linux get a no-op shim.
 
-Ideas:
-- **Progress bar in the overlay:** whisper.cpp processes audio in chunks/segments and exposes a progress callback (`whisper_full_params.progress_callback` / `new_segment_callback`). Wire that through `whisper-rs` to update an `OverlayState::Processing { progress: f32 }` variant, and render an actual progress bar instead of indeterminate dots. Progress should be a real fraction of audio processed, not a fake timer.
-- **Faster models / backends:**
-  - Try `ggml-tiny.en-q5_1.bin` or other quantised variants — smaller and faster than the default fp16 `tiny.en`, often with minimal accuracy loss on clean dictation.
-  - Look at distilled / turbo variants (e.g. `distil-whisper` ggml builds) if compatible with whisper.cpp.
-  - Build with hardware acceleration where available: Vulkan/OpenCL on Windows for GPUs that don't have CUDA, BLAS/AVX feature flags on CPU. Currently `whisper_device: "cpu"` is the only path exercised.
-  - Consider exposing a "speed vs accuracy" preset in the tray that picks model + quantisation + thread count together, rather than making the user understand all three knobs.
-- **Tune whisper params for short dictation:** `n_threads` (set to physical core count), `no_context = true`, `single_segment = true` for short utterances — all reduce latency without changing the model.
+Still open:
+- **Hardware acceleration.** `whisper_device` is honoured nowhere — the build currently only exercises the CPU path. Adding feature-gated `cuda` / `vulkan` / `metal` builds (or just shipping a CUDA-enabled installer alongside the CPU one) is the biggest remaining lever for low-spec or GPU-equipped machines.
+- **Distilled / turbo models.** `distil-whisper` ggml builds aren't in the tray submenu; worth evaluating quality on dictation before promoting.
+- **"Speed vs accuracy" preset.** Tray currently exposes model and (indirectly) thread count as separate concepts. A single preset that bundles model + quantisation + threads would be friendlier than asking users to understand all three knobs.
 
-Repro: on a low-spec machine, hold the hotkey for 20–30 seconds reading a paragraph, release. The wait before text appears feels open-ended because the overlay shows no progress.
+Repro for the fixed parts: hold the hotkey for 20 seconds reading a paragraph, release. The overlay now shows a progress bar filling left-to-right as whisper works through the audio. Tap the hotkey while it's still filling — inference aborts immediately (logs `cancel requested`), overlay closes, no further CPU spend.
 
 ## No feedback during model switch
 

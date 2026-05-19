@@ -13,6 +13,7 @@ use crate::autostart;
 use crate::config::{Config, models_dir};
 use crate::hotkey::{HotkeyEvent, spawn_listener};
 use crate::overlay::{OverlayState, SharedOverlay};
+use crate::priority;
 use crate::recorder::{Recorder, has_input_device};
 use crate::transcriber::{Transcriber, ensure_model};
 use crate::tray::ControlEvent;
@@ -105,6 +106,10 @@ pub fn worker_loop(
                     if let Some(p) = pending.take() {
                         tracing::warn!("model switch requested mid-transcription; cancelling");
                         p.cancel.store(true, Ordering::Release);
+                        // The inference thread will see the abort flag and
+                        // exit promptly; restore priority so the model
+                        // download/load that follows runs at NORMAL.
+                        priority::restore();
                     }
                     tracing::info!("switching model: {} -> {}", cfg.whisper_model, name);
                     set_state(&shared, OverlayState::Processing);
@@ -134,9 +139,16 @@ pub fn worker_loop(
                     }
                 }
                 ControlEvent::CancelTranscription => {
-                    if let Some(p) = pending.as_ref() {
+                    if let Some(p) = pending.take() {
                         tracing::info!("cancel requested — discarding pending transcription");
+                        // The inference thread holds its own Arc clone of
+                        // the cancel flag, so dropping our Pending here is
+                        // safe — the abort callback will still see `true`
+                        // and bail out. Clearing pending now lets the user
+                        // start a new recording immediately instead of
+                        // waiting for the orphan to finish.
                         p.cancel.store(true, Ordering::Release);
+                        priority::restore();
                         set_state(&shared, OverlayState::Idle);
                     }
                 }
@@ -150,6 +162,10 @@ pub fn worker_loop(
                 Ok(result) => {
                     let cancelled = p.cancel.load(Ordering::Acquire);
                     pending = None;
+                    // Drop priority back to NORMAL as soon as inference is
+                    // done so we don't keep starving background apps once
+                    // we're back to idle.
+                    priority::restore();
                     if cancelled {
                         tracing::info!("transcription cancelled — result discarded");
                     } else {
@@ -170,6 +186,7 @@ pub fn worker_loop(
                 Err(TryRecvError::Disconnected) => {
                     tracing::error!("transcription thread vanished without result");
                     pending = None;
+                    priority::restore();
                     set_state(&shared, OverlayState::Idle);
                 }
             }
@@ -186,9 +203,10 @@ pub fn worker_loop(
                 // the "cancel" gesture. Handled before the start-recording
                 // path so it doesn't immediately start a new recording on
                 // top of the cancel.
-                if let Some(p) = pending.as_ref() {
+                if let Some(p) = pending.take() {
                     tracing::info!("hotkey re-pressed during processing — cancelling");
                     p.cancel.store(true, Ordering::Release);
+                    priority::restore();
                     set_state(&shared, OverlayState::Idle);
                     continue;
                 }
@@ -235,8 +253,29 @@ pub fn worker_loop(
                     let trans = Arc::clone(&transcriber);
                     let cancel = Arc::new(AtomicBool::new(false));
                     let (tx, rx) = channel();
+
+                    // Reset the progress bar so the new run starts at 0
+                    // rather than flashing the previous run's fill before
+                    // the first callback fires.
+                    shared.lock().progress = 0.0;
+
+                    // Boost process priority while whisper.cpp is crunching.
+                    // Dropped back to NORMAL when the result is collected
+                    // (both success and cancel paths).
+                    priority::boost();
+
+                    let progress_shared = shared.clone();
+                    let abort_flag = Arc::clone(&cancel);
                     std::thread::spawn(move || {
-                        let result = trans.transcribe(&samples, &lang);
+                        let result = trans.transcribe(
+                            &samples,
+                            &lang,
+                            move |pct: i32| {
+                                progress_shared.lock().progress =
+                                    (pct as f32 / 100.0).clamp(0.0, 1.0);
+                            },
+                            move || abort_flag.load(Ordering::Acquire),
+                        );
                         // Receiver may be gone if the worker has moved on
                         // (model switch, shutdown) — drop the result silently.
                         let _ = tx.send(result);
@@ -260,5 +299,6 @@ fn set_state(shared: &SharedOverlay, s: OverlayState) {
     inner.state = s;
     if s == OverlayState::Idle {
         inner.audio_level = 0.0;
+        inner.progress = 0.0;
     }
 }
